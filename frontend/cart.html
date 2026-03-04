@@ -358,16 +358,20 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── API Configuration ──
+const API_BASE = "http://localhost:8080/api";
+
 // ── Auth Guard ──
-if(!localStorage.getItem('dkw_loggedCustomer')) window.location.href='index.html';
+const token = localStorage.getItem('decentkids_token');
+const user = JSON.parse(localStorage.getItem('decentkids_user') || '{}');
+
+if (!token || !user.userId) {
+  window.location.href = 'index.html';
+}
 
 // ── Helpers ──
-function getCart(){ return JSON.parse(localStorage.getItem('dkw_cart')||'[]'); }
-function saveCart(c){ localStorage.setItem('dkw_cart',JSON.stringify(c)); }
-function getProducts(){ return JSON.parse(localStorage.getItem('dkw_products')||'[]'); }
-function getOrders(){ return JSON.parse(localStorage.getItem('dkw_orders')||'[]'); }
-function saveOrders(o){ localStorage.setItem('dkw_orders',JSON.stringify(o)); }
-function getUser(){ return JSON.parse(localStorage.getItem('dkw_loggedCustomer')||'{}'); }
+function getCart(){ return JSON.parse(localStorage.getItem('decentkids_cart')||'[]'); }
+function saveCart(c){ localStorage.setItem('decentkids_cart',JSON.stringify(c)); }
 
 function showToast(msg,type='success'){
   const wrap=document.getElementById('toastWrap');
@@ -419,7 +423,7 @@ function renderCart(){
         ?`<img class="cart-item-img" src="${item.image}" alt="${item.name}"/>`
         :`<div class="cart-item-no-img"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`}
       <div class="cart-item-info">
-        <span class="cart-item-cat">${item.category}</span>
+        <span class="cart-item-cat">${item.category || 'UNCATEGORIZED'}</span>
         <div class="cart-item-name">${item.name}</div>
         <div class="cart-item-meta">${item.sizes?'Sizes: '+item.sizes:''}</div>
         <div class="qty-control">
@@ -517,7 +521,6 @@ function openConfirmModal(){
   const delivery=subtotal<499?49:0;
   const discAmt=couponDiscount>0?Math.round(subtotal*couponDiscount/100):0;
   const total=subtotal+delivery-discAmt;
-  const user=getUser();
 
   document.getElementById('orderSummaryDetails').innerHTML=`
     <div class="order-detail-row"><span>Customer</span><strong>${user.name||'—'}</strong></div>
@@ -546,118 +549,192 @@ function closeConfirmModal(){
   document.querySelectorAll('.step-line')[0].classList.remove('done');
 }
 
-// ── Place Order ──
-function placeOrder(){
+// ── Place Order (API Integration) ──
+async function placeOrder(){
   const cart=getCart();
-  const user=getUser();
+  if(cart.length === 0) {
+    showToast('Cart is empty!', 'error');
+    return;
+  }
+
   const subtotal=cart.reduce((s,i)=>s+(i.price*i.qty),0);
   const delivery=subtotal<499?49:0;
   const discAmt=couponDiscount>0?Math.round(subtotal*couponDiscount/100):0;
   const total=subtotal+delivery-discAmt;
-  const orderId='DKW'+Date.now();
 
-  const order={
-    id:orderId,
-    customerId:user.id,
-    customerName:user.name,
-    customerEmail:user.email,
-    customerPhone:user.phone,
-    items:cart.map(i=>({id:i.id,name:i.name,qty:i.qty,price:i.price,total:i.price*i.qty})),
-    subtotal, delivery, discount:discAmt, coupon:couponCode,
-    total, status:'Pending',
-    date:new Date().toLocaleDateString('en-IN'),
-    time:new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})
+  // Prepare order data for API
+  const orderData = {
+    customerId: user.userId,
+    orderItems: cart.map(item => ({
+      productId: item.id,
+      quantity: item.qty,
+      price: item.price
+    })),
+    total: total,
+    deliveryCharge: delivery,
+    discount: discAmt,
+    couponCode: couponCode || null,
+    notes: "Order placed from website"
   };
 
-  // save to global orders + customer orders
-  const orders=getOrders();
-  orders.push(order);
-  saveOrders(orders);
+  try {
+    // Disable place order button to prevent double submission
+    const placeOrderBtn = document.querySelector('.btn-confirm-order');
+    if (placeOrderBtn) {
+      placeOrderBtn.disabled = true;
+      placeOrderBtn.textContent = 'Placing Order...';
+    }
 
-  // update customer object with orders
-  const customers=JSON.parse(localStorage.getItem('dkw_customers')||'[]');
-  const ci=customers.findIndex(c=>c.id===user.id);
-  if(ci>-1){
-    if(!customers[ci].orders) customers[ci].orders=[];
-    customers[ci].orders.push(order);
-    localStorage.setItem('dkw_customers',JSON.stringify(customers));
-    // update logged user too
-    localStorage.setItem('dkw_loggedCustomer',JSON.stringify(customers[ci]));
+    const response = await fetch(`${API_BASE}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(orderData)
+    });
+
+    const data = await response.json();
+
+    if (data.success && data.data) {
+      const order = data.data;
+      const orderId = `DKW${order.id || Date.now()}`;
+
+      // Clear cart after successful order
+      saveCart([]);
+
+      // Close confirm modal and show success
+      document.getElementById('confirmModal').classList.remove('open');
+      document.getElementById('successOrderId').textContent='Order #'+orderId;
+      document.getElementById('successModal').classList.add('open');
+
+      // Mark step 3 as done
+      document.querySelectorAll('.step').forEach(s=>{s.classList.remove('pending','active');s.classList.add('done');});
+      document.querySelectorAll('.step-line').forEach(l=>l.classList.add('done'));
+
+      // Refresh cart display
+      renderCart();
+      
+      showToast('Order placed successfully!');
+    } else {
+      console.error('Order placement failed:', data.message);
+      showToast(data.message || 'Failed to place order. Please try again.', 'error');
+      
+      // Re-enable button
+      if (placeOrderBtn) {
+        placeOrderBtn.disabled = false;
+        placeOrderBtn.textContent = 'Confirm & Place Order';
+      }
+    }
+  } catch (error) {
+    console.error('Error placing order:', error);
+    showToast('Network error. Please check your connection and try again.', 'error');
+    
+    // Re-enable button
+    const placeOrderBtn = document.querySelector('.btn-confirm-order');
+    if (placeOrderBtn) {
+      placeOrderBtn.disabled = false;
+      placeOrderBtn.textContent = 'Confirm & Place Order';
+    }
   }
-
-  // clear cart
-  saveCart([]);
-
-  // close confirm, show success
-  document.getElementById('confirmModal').classList.remove('open');
-  document.getElementById('successOrderId').textContent='Order #'+orderId;
-  document.getElementById('successModal').classList.add('open');
-
-  // mark step 3
-  document.querySelectorAll('.step').forEach(s=>{s.classList.remove('pending','active');s.classList.add('done');});
-  document.querySelectorAll('.step-line').forEach(l=>l.classList.add('done'));
-
-  renderCart();
 }
 
-// ── Suggested Products ──
-function loadSuggested(){
+// ── Suggested Products (API Integration) ──
+async function loadSuggested(){
   const cart=getCart();
   const cartIds=cart.map(i=>i.id);
-  const all=getProducts();
-  const suggested=all.filter(p=>!cartIds.includes(p.id)&&p.stock>0).slice(-4).reverse();
   const card=document.getElementById('suggestedCard');
   const grid=document.getElementById('suggestedGrid');
-  if(suggested.length===0||cart.length===0){ card.style.display='none'; return; }
-  card.style.display='block';
-  grid.innerHTML=suggested.map(p=>`
-    <div style="border:1.5px solid var(--pink-mid);border-radius:12px;overflow:hidden;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--pink)'" onmouseout="this.style.borderColor='var(--pink-mid)'">
-      <div style="background:var(--pink-light);aspect-ratio:4/3;overflow:hidden">
-        ${p.image?`<img src="${p.image}" style="width:100%;height:100%;object-fit:cover" alt="${p.name}"/>`
-        :`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          </div>`}
-      </div>
-      <div style="padding:10px">
-        <div style="font-size:0.8rem;font-weight:700;color:var(--black);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-size:0.85rem;font-weight:800;color:var(--pink-dark)">₹${p.discountPrice||p.price}</span>
-          <button onclick="quickAdd('${p.id}')" style="padding:4px 10px;background:var(--pink);color:var(--white);border:none;border-radius:6px;font-family:'Poppins',sans-serif;font-size:0.72rem;font-weight:700;cursor:pointer">+Add</button>
+  
+  if(cart.length===0){ 
+    card.style.display='none'; 
+    return; 
+  }
+
+  try {
+    // Load a few random products from API
+    const response = await fetch(`${API_BASE}/products?page=0&size=8`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+    
+    if (data.success && data.data && data.data.content) {
+      // Filter out items already in cart and take first 4
+      const suggested = data.data.content
+        .filter(p => !cartIds.includes(p.id.toString()) && p.stock > 0)
+        .slice(0, 4);
+      
+      if(suggested.length === 0) {
+        card.style.display='none'; 
+        return;
+      }
+      
+      card.style.display='block';
+      grid.innerHTML=suggested.map(p=>`
+        <div style="border:1.5px solid var(--pink-mid);border-radius:12px;overflow:hidden;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--pink)'" onmouseout="this.style.borderColor='var(--pink-mid)'">
+          <div style="background:var(--pink-light);aspect-ratio:4/3;overflow:hidden">
+            ${p.imageUrl?`<img src="${p.imageUrl}" style="width:100%;height:100%;object-fit:cover" alt="${p.name}"/>`
+            :`<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              </div>`}
+          </div>
+          <div style="padding:10px">
+            <div style="font-size:0.8rem;font-weight:700;color:var(--black);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.name}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:0.85rem;font-weight:800;color:var(--pink-dark)">₹${p.price}</span>
+              <button onclick="quickAdd('${p.id}', '${p.name}', '${p.price}', '${p.imageUrl || ''}', '${p.category || 'UNCATEGORIZED'}', '${p.sizes || ''}', '${p.stock}')" style="padding:4px 10px;background:var(--pink);color:var(--white);border:none;border-radius:6px;font-family:'Poppins',sans-serif;font-size:0.72rem;font-weight:700;cursor:pointer">+Add</button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-  `).join('');
+      `).join('');
+    } else {
+      card.style.display='none';
+    }
+  } catch (error) {
+    console.error('Error loading suggested products:', error);
+    card.style.display='none';
+  }
 }
 
-function quickAdd(id){
-  const prod=getProducts().find(p=>p.id===id); if(!prod) return;
+function quickAdd(id, name, price, image, category, sizes, stock){
   const cart=getCart();
-  const ex=cart.find(i=>i.id===id);
-  if(ex){ ex.qty+=1; } else {
-    cart.push({id:prod.id,name:prod.name,price:prod.discountPrice||prod.price,image:prod.image,category:prod.category,sizes:prod.sizes,qty:1,stock:prod.stock});
+  const existing=cart.find(i=>i.id==id);
+  
+  if(existing){ 
+    existing.qty+=1; 
+  } else {
+    cart.push({
+      id: id,
+      name: name,
+      price: parseFloat(price),
+      image: image,
+      category: category,
+      sizes: sizes,
+      qty: 1,
+      stock: parseInt(stock)
+    });
   }
+  
   saveCart(cart);
-  showToast(prod.name+' added!');
+  showToast(name+' added!');
   renderCart();
 }
 
 // ── Profile ──
 function loadProfile(){
-  const user=getUser();
-  if(user.name) document.getElementById('profileBtn').textContent=user.name.charAt(0).toUpperCase();
-}
-
-// ── Favicon ──
-const icon=localStorage.getItem('dkw_siteIcon');
-if(icon){
-  let link=document.querySelector("link[rel~='icon']");
-  if(!link){link=document.createElement('link');link.rel='icon';document.head.appendChild(link);}
-  link.href=icon;
+  if(user.name) {
+    document.getElementById('profileBtn').textContent=user.name.charAt(0).toUpperCase();
+  }
 }
 
 // ── Init ──
 renderCart();
 loadProfile();
+</script>
 </script>
 </body>
 </html>

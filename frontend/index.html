@@ -598,45 +598,188 @@
     setTimeout(()=>{ window.location.href='customer.html'; }, 1000);
   }
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // ── API Configuration ──
+  const API_BASE = "http://localhost:8080/api";
+
+  // ── Global Helpers ──
+  function showAlert(alertId, message, type){
+    const alertEl = document.getElementById(alertId);
+    alertEl.innerHTML = `<div class="alert alert-${type === 'error' ? 'danger' : 'success'}" role="alert">${message}</div>`;
+    setTimeout(() => alertEl.innerHTML = '', 4000);
+  }
+
+  function setLoading(elementId, loading) {
+    const btn = document.getElementById(elementId);
+    if (loading) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Loading...';
+    } else {
+      btn.disabled = false;
+      // Restore original text based on context
+      if (elementId === 'loginBtn') btn.innerHTML = 'Sign In';
+      else if (elementId === 'registerBtn') btn.innerHTML = 'Create Account';
+      else if (elementId === 'adminLoginBtn') btn.innerHTML = 'Admin Login';
+    }
+  }
+
+  // ── Customer Login ──
+  async function customerLogin(){
+    const email = document.getElementById('cust-email').value.trim();
+    const password = document.getElementById('cust-pass').value;
+    
+    if(!email || !password){ 
+      showAlert('cust-alert','Please fill all fields.','error'); 
+      return; 
+    }
+
+    setLoading('loginBtn', true);
+
+    try {
+      const response = await fetch(`${API_BASE}/auth/customer/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email: email,
+          password: password
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Save JWT token and user info
+        localStorage.setItem('decentkids_token', data.data.token);
+        localStorage.setItem('decentkids_user', JSON.stringify(data.data));
+        localStorage.setItem('decentkids_role', data.data.role);
+        
+        showAlert('cust-alert', 'Login successful! Redirecting...', 'success');
+        setTimeout(() => {
+          window.location.href = 'customer.html';
+        }, 1000);
+      } else {
+        showAlert('cust-alert', data.message || 'Login failed. Please check your credentials.', 'error');
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      showAlert('cust-alert', 'Network error. Please try again.', 'error');
+    } finally {
+      setLoading('loginBtn', false);
+    }
+  }
+
   // ── Customer Register ──
-  function registerCustomer(){
-    const name    = document.getElementById('reg-name').value.trim();
-    const age     = document.getElementById('reg-age').value.trim();
-    const gender  = document.getElementById('reg-gender').value;
-    const phone   = document.getElementById('reg-phone').value.trim();
-    const email   = document.getElementById('reg-email').value.trim();
+  async function registerCustomer(){
+    const name = document.getElementById('reg-name').value.trim();
+    const age = document.getElementById('reg-age').value.trim();
+    const gender = document.getElementById('reg-gender').value;
+    const phone = document.getElementById('reg-phone').value.trim();
+    const email = document.getElementById('reg-email').value.trim();
     const address = document.getElementById('reg-address').value.trim();
-    const pass    = document.getElementById('reg-pass').value;
+    const pass = document.getElementById('reg-pass').value;
+
     if(!name||!age||!gender||!phone||!email||!address||!pass){
       showAlert('reg-alert','Please fill all fields.','error'); return;
     }
-    if(!/^[0-9]{10}$/.test(phone)){ showAlert('reg-alert','Enter a valid 10-digit phone number.','error'); return; }
-    if(pass.length < 6){ showAlert('reg-alert','Password must be at least 6 characters.','error'); return; }
-    const customers = JSON.parse(localStorage.getItem('dkw_customers')||'[]');
-    if(customers.find(c=>c.email===email)){ showAlert('reg-alert','Email already registered.','error'); return; }
-    const newUser = {
-      id: 'CU'+Date.now(),
-      name, age, gender, phone, email, address, password: pass,
-      createdAt: new Date().toLocaleDateString('en-IN')
-    };
-    customers.push(newUser);
-    localStorage.setItem('dkw_customers', JSON.stringify(customers));
-    showAlert('reg-alert','Account created! Please login.','success');
-    setTimeout(()=>{ showLogin(); }, 1500);
+    if(!/^[0-9]{10}$/.test(phone)){ 
+      showAlert('reg-alert','Enter a valid 10-digit phone number.','error'); return; 
+    }
+    if(pass.length < 6){ 
+      showAlert('reg-alert','Password must be at least 6 characters.','error'); return; 
+    }
+
+    setLoading('registerBtn', true);
+
+    try {
+      const response = await fetch(`${API_BASE}/auth/customer/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          fullName: name,
+          age: parseInt(age),
+          gender: gender,
+          phone: phone,
+          email: email,
+          address: address,
+          password: pass
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        showAlert('reg-alert', 'Account created successfully! Please login.', 'success');
+        setTimeout(() => { 
+          showLogin(); 
+          // Clear registration form
+          document.getElementById('reg-name').value = '';
+          document.getElementById('reg-age').value = '';
+          document.getElementById('reg-gender').value = '';
+          document.getElementById('reg-phone').value = '';
+          document.getElementById('reg-email').value = email; // Pre-fill email for login
+          document.getElementById('reg-address').value = '';
+          document.getElementById('reg-pass').value = '';
+        }, 1500);
+      } else {
+        showAlert('reg-alert', data.message || 'Registration failed. Please try again.', 'error');
+      }
+    } catch (error) {
+      console.error('Registration error:', error);
+      showAlert('reg-alert', 'Network error. Please try again.', 'error');
+    } finally {
+      setLoading('registerBtn', false);
+    }
   }
 
   // ── Admin Login ──
-  function adminLogin(){
+  async function adminLogin(){
     const user = document.getElementById('admin-user').value.trim();
     const pass = document.getElementById('admin-pass').value;
-    if(!user||!pass){ showAlert('admin-alert','Please fill all fields.','error'); return; }
-    const admin = JSON.parse(localStorage.getItem('dkw_admin'));
-    if((user===admin.username||user===admin.email) && pass===admin.password){
-      localStorage.setItem('dkw_adminLoggedIn','true');
-      showAlert('admin-alert','Welcome Admin! Redirecting...','success');
-      setTimeout(()=>{ window.location.href='admin.html'; }, 1000);
-    } else {
-      showAlert('admin-alert','Invalid admin credentials.','error');
+    
+    if(!user||!pass){ 
+      showAlert('admin-alert','Please fill all fields.','error'); 
+      return; 
+    }
+
+    setLoading('adminLoginBtn', true);
+
+    try {
+      const response = await fetch(`${API_BASE}/auth/admin/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          usernameOrEmail: user,
+          password: pass
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Save JWT token and admin info
+        localStorage.setItem('decentkids_token', data.data.token);
+        localStorage.setItem('decentkids_user', JSON.stringify(data.data));
+        localStorage.setItem('decentkids_role', data.data.role);
+        
+        showAlert('admin-alert', 'Welcome Admin! Redirecting...', 'success');
+        setTimeout(() => {
+          window.location.href = 'admin.html';
+        }, 1000);
+      } else {
+        showAlert('admin-alert', data.message || 'Invalid admin credentials.', 'error');
+      }
+    } catch (error) {
+      console.error('Admin login error:', error);
+      showAlert('admin-alert', 'Network error. Please try again.', 'error');
+    } finally {
+      setLoading('adminLoginBtn', false);
     }
   }
 
@@ -654,14 +797,56 @@
   document.addEventListener('keydown', function(e){
     if(e.key==='Enter'){
       const activePanel = document.querySelector('.tab-panel.active').id;
-      if(activePanel==='panel-customer') customerLogin();
+      if(activePanel==='panel-customer') {
+        const loginForm = document.getElementById('customer-login-form');
+        const registerForm = document.getElementById('customer-register-form');
+        if (loginForm.style.display !== 'none') {
+          customerLogin();
+        } else if (registerForm.style.display !== 'none') {
+          registerCustomer();
+        }
+      }
       if(activePanel==='panel-admin') adminLogin();
     }
   });
 
-  // ── If already logged in, redirect ──
-  if(localStorage.getItem('dkw_adminLoggedIn')==='true') window.location.href='admin.html';
-  if(localStorage.getItem('dkw_loggedCustomer')) window.location.href='customer.html';
+  // ── Tab switching functionality ── 
+  function switchTab(type) {
+    // Update tab buttons
+    document.getElementById('tab-customer').classList.toggle('active', type === 'customer');
+    document.getElementById('tab-admin').classList.toggle('active', type === 'admin');
+    
+    // Update tab panels
+    document.getElementById('panel-customer').classList.toggle('active', type === 'customer');
+    document.getElementById('panel-admin').classList.toggle('active', type === 'admin');
+  }
+
+  // ── Password visibility toggle ──
+  function togglePass(inputId, button) {
+    const input = document.getElementById(inputId);
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    
+    // Update eye icon
+    const svg = button.querySelector('svg');
+    if (isPassword) {
+      svg.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+    } else {
+      svg.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+    }
+  }
+
+  // ── Check if already logged in ──
+  const token = localStorage.getItem('decentkids_token');
+  const role = localStorage.getItem('decentkids_role');
+  
+  if (token && role) {
+    if (role === 'ADMIN') {
+      window.location.href = 'admin.html';
+    } else if (role === 'CUSTOMER') {
+      window.location.href = 'customer.html';
+    }
+  }
 </script>
 </body>
 </html>

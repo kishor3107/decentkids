@@ -634,20 +634,59 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── API Configuration ──
+const API_BASE = "http://localhost:8080/api";
+
 // ── Auth Guard ──
-if(localStorage.getItem('dkw_adminLoggedIn')!=='true'){
-  window.location.href='index.html';
+const token = localStorage.getItem('decentkids_token');
+const user = JSON.parse(localStorage.getItem('decentkids_user') || '{}');
+
+if (!token || user.role !== 'ADMIN') {
+  localStorage.removeItem('decentkids_token');
+  localStorage.removeItem('decentkids_user');
+  window.location.href = 'index.html';
 }
 
+// ── Data Cache ──
+let dashboardData = null;
+let productsData = [];
+let customersData = [];
+let ordersData = [];
+
 // ── Helpers ──
-function getProducts(){ return JSON.parse(localStorage.getItem('dkw_products')||'[]'); }
-function saveProducts(p){ localStorage.setItem('dkw_products',JSON.stringify(p)); }
-function getCustomers(){ return JSON.parse(localStorage.getItem('dkw_customers')||'[]'); }
-function getOrders(){ return JSON.parse(localStorage.getItem('dkw_orders')||'[]'); }
 function showAlert(id,msg,type){
   const el=document.getElementById(id);
   el.className='alert-box alert-'+type; el.textContent=msg; el.style.display='block';
   setTimeout(()=>{el.style.display='none';},3500);
+}
+
+// ── API Helpers ──
+async function apiCall(endpoint, method = 'GET', data = null) {
+  try {
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    };
+    
+    if (data) {
+      options.body = JSON.stringify(data);
+    }
+    
+    const response = await fetch(`${API_BASE}${endpoint}`, options);
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.message || 'API request failed');
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('API Error:', error);
+    throw error;
+  }
 }
 
 // ── Sidebar ──
@@ -696,8 +735,8 @@ function previewImg(inputId, previewId){
   reader.readAsDataURL(file);
 }
 
-// ── Add Product ──
-function addProduct(){
+// ── Add Product (API Integration) ──
+async function addProduct(){
   const name=document.getElementById('pName').value.trim();
   const cat=document.getElementById('pCategory').value;
   const price=document.getElementById('pPrice').value;
@@ -707,27 +746,41 @@ function addProduct(){
   const age=document.getElementById('pAge').value;
   const desc=document.getElementById('pDesc').value.trim();
   const sale=document.getElementById('pSale').checked;
-  const imgFile=document.getElementById('prodImg').files[0];
-  if(!name||!cat||!price||!stock){ showAlert('add-alert','Please fill required fields (Name, Category, Price, Stock).','error'); return; }
-  function finalSave(imgData){
-    const products=getProducts();
-    const newProd={
-      id:'P'+Date.now(), name, category:cat, price:parseFloat(price),
-      discountPrice:discount?parseFloat(discount):null,
-      stock:parseInt(stock), sizes, ageGroup:age, description:desc,
-      sale, image:imgData, createdAt:new Date().toLocaleDateString('en-IN')
-    };
-    products.push(newProd);
-    saveProducts(products);
-    showAlert('add-alert','Product added successfully!','success');
-    updateCounts();
-    resetProductForm();
+  
+  if(!name||!cat||!price||!stock){ 
+    showAlert('add-alert','Please fill required fields (Name, Category, Price, Stock).','error'); 
+    return; 
   }
-  if(imgFile){
-    const reader=new FileReader();
-    reader.onload=e=>finalSave(e.target.result);
-    reader.readAsDataURL(imgFile);
-  } else { finalSave(''); }
+
+  try {
+    const productData = {
+      name,
+      description: desc || null,
+      price: parseFloat(price),
+      stock: parseInt(stock),
+      category: cat,
+      imageUrl: '', // Note: File upload would need separate endpoint
+      ageGroup: age || null,
+      sizes: sizes || null
+    };
+
+    const result = await apiCall('/admin/products', 'POST', productData);
+    
+    if (result.success) {
+      showAlert('add-alert','Product added successfully!','success');
+      resetProductForm();
+      updateCounts();
+      // Refresh products if on manage products page
+      if (document.getElementById('sec-manage-products').classList.contains('active')) {
+        loadProductTable();
+      }
+    } else {
+      showAlert('add-alert', result.message || 'Failed to add product', 'error');
+    }
+  } catch (error) {
+    console.error('Error adding product:', error);
+    showAlert('add-alert', 'Error adding product. Please try again.', 'error');
+  }
 }
 
 function resetProductForm(){
@@ -740,120 +793,169 @@ function resetProductForm(){
   prev.src=''; prev.style.display='none';
 }
 
-// ── Load Product Table ──
-function loadProductTable(){
-  const products=getProducts();
-  const tbody=document.getElementById('productTableBody');
-  const empty=document.getElementById('noProducts');
-  if(products.length===0){ tbody.innerHTML=''; empty.style.display='block'; return; }
-  empty.style.display='none';
-  tbody.innerHTML=products.map(p=>`
-    <tr>
-      <td>${p.image?`<img src="${p.image}" class="prod-img-thumb" alt="${p.name}"/>`:`<div style="width:44px;height:44px;border-radius:8px;background:var(--pink-light);display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`}</td>
-      <td><div style="font-weight:600;color:var(--black)">${p.name}</div><div style="font-size:0.73rem;color:var(--gray)">${p.ageGroup||''}</div></td>
-      <td><span style="font-size:0.8rem">${p.category}</span></td>
-      <td>
-        <div style="font-weight:700;color:var(--black)">₹${p.price}</div>
-        ${p.discountPrice?`<div style="font-size:0.73rem;color:#db2777;text-decoration:line-through">₹${p.price}</div><div style="font-size:0.8rem;font-weight:700;color:#166534">₹${p.discountPrice}</div>`:''}
-      </td>
-      <td><span class="stock-badge ${p.stock>0?'stock-in':'stock-out'}">${p.stock>0?p.stock+' in stock':'Out of stock'}</span></td>
-      <td>${p.sale?'<span class="sale-badge">SALE</span>':'<span style="color:var(--gray);font-size:0.78rem">—</span>'}</td>
-      <td style="white-space:nowrap">
-        <button class="btn-edit me-1" onclick="openEditModal('${p.id}')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          Edit
-        </button>
-        <button class="btn-danger" onclick="deleteProduct('${p.id}')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-          Delete
-        </button>
-      </td>
-    </tr>
-  `).join('');
+// ── Load Product Table (API Integration) ──
+async function loadProductTable(){
+  try {
+    const result = await apiCall('/products?page=0&size=100'); // Get all products for admin
+    
+    if (result.success && result.data && result.data.content) {
+      productsData = result.data.content;
+      
+      const tbody=document.getElementById('productTableBody');
+      const empty=document.getElementById('noProducts');
+      
+      if(productsData.length===0){ 
+        tbody.innerHTML=''; 
+        empty.style.display='block'; 
+        return; 
+      }
+      
+      empty.style.display='none';
+      tbody.innerHTML=productsData.map(p=>`
+        <tr>
+          <td>${p.imageUrl?`<img src="${p.imageUrl}" class="prod-img-thumb" alt="${p.name}"/>`:`<div style="width:44px;height:44px;border-radius:8px;background:var(--pink-light);display:flex;align-items:center;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>`}</td>
+          <td><div style="font-weight:600;color:var(--black)">${p.name}</div><div style="font-size:0.73rem;color:var(--gray)">${p.ageGroup||''}</div></td>
+          <td><span style="font-size:0.8rem">${p.category || 'UNCATEGORIZED'}</span></td>
+          <td>
+            <div style="font-weight:700;color:var(--black)">₹${p.price}</div>
+          </td>
+          <td><span class="stock-badge ${p.stock>0?'stock-in':'stock-out'}">${p.stock>0?p.stock+' in stock':'Out of stock'}</span></td>
+          <td>
+            <span style="color:var(--gray);font-size:0.78rem">—</span>
+          </td>
+          <td style="white-space:nowrap">
+            <button class="btn-edit me-1" onclick="openEditModal('${p.id}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Edit
+            </button>
+            <button class="btn-danger" onclick="deleteProduct('${p.id}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+              Delete
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    } else {
+      console.error('Failed to load products:', result.message);
+      showAlert('add-alert', 'Failed to load products', 'error');
+    }
+  } catch (error) {
+    console.error('Error loading products:', error);
+    showAlert('add-alert', 'Error loading products. Please try again.', 'error');
+  }
 }
 
-function deleteProduct(id){
+async function deleteProduct(id){
   if(!confirm('Delete this product?')) return;
-  let products=getProducts().filter(p=>p.id!==id);
-  saveProducts(products);
-  loadProductTable();
-  updateCounts();
+  
+  try {
+    const result = await apiCall(`/admin/products/${id}`, 'DELETE');
+    
+    if (result.success) {
+      loadProductTable();
+      updateCounts();
+      showAlert('add-alert', 'Product deleted successfully!', 'success');
+    } else {
+      showAlert('add-alert', result.message || 'Failed to delete product', 'error');
+    }
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    showAlert('add-alert', 'Error deleting product. Please try again.', 'error');
+  }
 }
 
 // ── Edit Modal ──
 function openEditModal(id){
-  const p=getProducts().find(p=>p.id===id);
+  const p=productsData.find(p=>p.id==id);
   if(!p) return;
   document.getElementById('editId').value=id;
   document.getElementById('editName').value=p.name;
-  document.getElementById('editCategory').value=p.category;
+  document.getElementById('editCategory').value=p.category || '';
   document.getElementById('editPrice').value=p.price;
-  document.getElementById('editDiscount').value=p.discountPrice||'';
+  document.getElementById('editDiscount').value=''; // Backend doesn't support discount price yet
   document.getElementById('editStock').value=p.stock;
   document.getElementById('editSizes').value=p.sizes||'';
   document.getElementById('editAge').value=p.ageGroup||'';
   document.getElementById('editDesc').value=p.description||'';
-  document.getElementById('editSale').checked=p.sale||false;
+  document.getElementById('editSale').checked=false; // Backend doesn't support sale flag yet
   const prev=document.getElementById('editImgPreview');
-  if(p.image){ prev.src=p.image; prev.style.display='block'; }
+  if(p.imageUrl){ prev.src=p.imageUrl; prev.style.display='block'; }
   else { prev.src=''; prev.style.display='none'; }
   document.getElementById('editImg').value='';
   document.getElementById('editModal').style.display='block';
 }
 function closeEditModal(){ document.getElementById('editModal').style.display='none'; }
-function saveEdit(){
+
+async function saveEdit(){
   const id=document.getElementById('editId').value;
-  const products=getProducts();
-  const idx=products.findIndex(p=>p.id===id);
-  if(idx===-1) return;
-  function doSave(imgData){
-    products[idx]={
-      ...products[idx],
-      name:document.getElementById('editName').value.trim(),
-      category:document.getElementById('editCategory').value,
-      price:parseFloat(document.getElementById('editPrice').value),
-      discountPrice:document.getElementById('editDiscount').value?parseFloat(document.getElementById('editDiscount').value):null,
-      stock:parseInt(document.getElementById('editStock').value),
-      sizes:document.getElementById('editSizes').value.trim(),
-      ageGroup:document.getElementById('editAge').value,
-      description:document.getElementById('editDesc').value.trim(),
-      sale:document.getElementById('editSale').checked,
-      image:imgData
+  
+  try {
+    const productData = {
+      name: document.getElementById('editName').value.trim(),
+      description: document.getElementById('editDesc').value.trim() || null,
+      price: parseFloat(document.getElementById('editPrice').value),
+      stock: parseInt(document.getElementById('editStock').value),
+      category: document.getElementById('editCategory').value,
+      ageGroup: document.getElementById('editAge').value || null,
+      sizes: document.getElementById('editSizes').value.trim() || null
     };
-    saveProducts(products);
-    closeEditModal();
-    loadProductTable();
-    updateCounts();
+
+    const result = await apiCall(`/admin/products/${id}`, 'PUT', productData);
+    
+    if (result.success) {
+      closeEditModal();
+      loadProductTable();
+      updateCounts();
+      showAlert('add-alert', 'Product updated successfully!', 'success');
+    } else {
+      showAlert('add-alert', result.message || 'Failed to update product', 'error');
+    }
+  } catch (error) {
+    console.error('Error updating product:', error);
+    showAlert('add-alert', 'Error updating product. Please try again.', 'error');
   }
-  const file=document.getElementById('editImg').files[0];
-  if(file){
-    const reader=new FileReader();
-    reader.onload=e=>doSave(e.target.result);
-    reader.readAsDataURL(file);
-  } else { doSave(products[idx].image); }
 }
 
-// ── Customers ──
-function loadCustomers(){
-  const customers=getCustomers();
-  const tbody=document.getElementById('customersTableBody');
-  const empty=document.getElementById('noCustomers');
-  if(customers.length===0){ tbody.innerHTML=''; empty.style.display='block'; return; }
-  empty.style.display='none';
-  tbody.innerHTML=customers.map(c=>`
-    <tr>
-      <td style="font-size:0.75rem;color:var(--gray)">${c.id}</td>
-      <td style="font-weight:600">${c.name}</td>
-      <td>${c.email}</td>
-      <td>${c.phone}</td>
-      <td>${c.age}</td>
-      <td>${c.gender}</td>
-      <td style="font-size:0.78rem;color:var(--gray)">${c.createdAt}</td>
-    </tr>
-  `).join('');
+// ── Customers (API Integration) ──
+async function loadCustomers(){
+  try {
+    const result = await apiCall('/admin/customers');
+    
+    if (result.success && result.data) {
+      customersData = result.data;
+      
+      const tbody=document.getElementById('customersTableBody');
+      const empty=document.getElementById('noCustomers');
+      
+      if(customersData.length===0){ 
+        tbody.innerHTML=''; 
+        empty.style.display='block'; 
+        return; 
+      }
+      
+      empty.style.display='none';
+      tbody.innerHTML=customersData.map(c=>`
+        <tr>
+          <td style="font-size:0.75rem;color:var(--gray)">${c.id}</td>
+          <td style="font-weight:600">${c.name}</td>
+          <td>${c.email}</td>
+          <td>${c.phone || '—'}</td>
+          <td>${c.age || '—'}</td>
+          <td>${c.gender || '—'}</td>
+          <td style="font-size:0.78rem;color:var(--gray)">${c.createDate || '—'}</td>
+        </tr>
+      `).join('');
+    } else {
+      console.error('Failed to load customers:', result.message);
+      showAlert('add-alert', 'Failed to load customers', 'error');
+    }
+  } catch (error) {
+    console.error('Error loading customers:', error);
+    showAlert('add-alert', 'Error loading customers. Please try again.', 'error');
+  }
 }
 
-// ── Site Settings ──
+// ── Site Settings (Local Storage) ──
 function uploadSiteIcon(input){
   const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
@@ -919,60 +1021,99 @@ function saveSettings(){
   showAlert('settings-alert','Settings saved successfully!','success');
 }
 
-// ── Change Password ──
+// ── Change Password (Note: would need API endpoint) ──
 function changePassword(){
   const cur=document.getElementById('curPass').value;
   const nw=document.getElementById('newPass').value;
   const conf=document.getElementById('confPass').value;
-  const admin=JSON.parse(localStorage.getItem('dkw_admin'));
-  if(cur!==admin.password){ showAlert('pass-alert','Current password is incorrect.','error'); return; }
+  
+  if(cur.length < 6){ showAlert('pass-alert','Current password is too short.','error'); return; }
   if(nw.length<6){ showAlert('pass-alert','New password must be at least 6 characters.','error'); return; }
   if(nw!==conf){ showAlert('pass-alert','Passwords do not match.','error'); return; }
-  admin.password=nw;
-  localStorage.setItem('dkw_admin',JSON.stringify(admin));
-  showAlert('pass-alert','Password updated successfully!','success');
+  
+  // TODO: Implement API call to change password
+  showAlert('pass-alert','Password change not implemented yet. This would need a backend endpoint.','error');
   ['curPass','newPass','confPass'].forEach(id=>document.getElementById(id).value='');
 }
 
-// ── Dashboard ──
-function loadDashboard(){
-  const products=getProducts();
-  const customers=getCustomers();
-  const orders=getOrders();
-  document.getElementById('dash-products').textContent=products.length;
-  document.getElementById('dash-customers').textContent=customers.length;
-  document.getElementById('dash-orders').textContent=orders.length;
-  const revenue=orders.reduce((s,o)=>s+(o.total||0),0);
-  document.getElementById('dash-revenue').textContent='₹'+revenue.toLocaleString('en-IN');
-  // Recent products
-  const recent=products.slice(-5).reverse();
-  const rp=document.getElementById('recentProducts');
-  if(recent.length===0){ rp.innerHTML='<div class="empty-state"><p>No products yet.</p></div>'; return; }
-  rp.innerHTML=`<div style="display:flex;flex-direction:column;gap:10px">${recent.map(p=>`
-    <div style="display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #f3f4f6;border-radius:10px">
-      ${p.image?`<img src="${p.image}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1.5px solid var(--pink-mid)" alt=""/>`:
-      `<div style="width:40px;height:40px;border-radius:8px;background:var(--pink-light);display:flex;align-items:center;justify-content:center">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-      </div>`}
-      <div style="flex:1"><div style="font-weight:600;font-size:0.87rem">${p.name}</div>
-      <div style="font-size:0.75rem;color:var(--gray)">${p.category} · ₹${p.price}</div></div>
-      <span class="stock-badge ${p.stock>0?'stock-in':'stock-out'}">${p.stock>0?p.stock:0}</span>
-    </div>
-  `).join('')}</div>`;
+// ── Dashboard (API Integration) ──
+async function loadDashboard(){
+  try {
+    const result = await apiCall('/admin/dashboard');
+    
+    if (result.success && result.data) {
+      dashboardData = result.data;
+      
+      document.getElementById('dash-products').textContent = dashboardData.totalProducts || 0;
+      document.getElementById('dash-customers').textContent = dashboardData.totalCustomers || 0;
+      document.getElementById('dash-orders').textContent = dashboardData.totalOrders || 0;
+      document.getElementById('dash-revenue').textContent = '₹' + (dashboardData.totalRevenue || 0).toLocaleString('en-IN');
+      
+      // Recent products
+      const recent = dashboardData.recentProducts || [];
+      const rp = document.getElementById('recentProducts');
+      
+      if(recent.length === 0) { 
+        rp.innerHTML = '<div class="empty-state"><p>No products yet.</p></div>'; 
+        return; 
+      }
+      
+      rp.innerHTML=`<div style="display:flex;flex-direction:column;gap:10px">${recent.map(p=>`
+        <div style="display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #f3f4f6;border-radius:10px">
+          ${p.imageUrl?`<img src="${p.imageUrl}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1.5px solid var(--pink-mid)" alt=""/>`:
+          `<div style="width:40px;height:40px;border-radius:8px;background:var(--pink-light);display:flex;align-items:center;justify-content:center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#db2777" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          </div>`}
+          <div style="flex:1"><div style="font-weight:600;font-size:0.87rem">${p.name}</div>
+          <div style="font-size:0.75rem;color:var(--gray)">${p.category || 'UNCATEGORIZED'} · ₹${p.price}</div></div>
+          <span class="stock-badge ${p.stock>0?'stock-in':'stock-out'}">${p.stock>0?p.stock:0}</span>
+        </div>
+      `).join('')}</div>`;
+    } else {
+      console.error('Failed to load dashboard data:', result.message);
+      // Set default values
+      document.getElementById('dash-products').textContent = '0';
+      document.getElementById('dash-customers').textContent = '0';
+      document.getElementById('dash-orders').textContent = '0';
+      document.getElementById('dash-revenue').textContent = '₹0';
+      document.getElementById('recentProducts').innerHTML = '<div class="empty-state"><p>Failed to load dashboard data.</p></div>';
+    }
+  } catch (error) {
+    console.error('Error loading dashboard:', error);
+    // Set default values in case of error
+    document.getElementById('dash-products').textContent = '0';
+    document.getElementById('dash-customers').textContent = '0';
+    document.getElementById('dash-orders').textContent = '0';
+    document.getElementById('dash-revenue').textContent = '₹0';
+    document.getElementById('recentProducts').innerHTML = '<div class="empty-state"><p>Error loading dashboard data.</p></div>';
+  }
 }
 
 // ── Update counts ──
-function updateCounts(){
-  const pc=getProducts().length;
-  const cc=getCustomers().length;
-  document.getElementById('prodCount').textContent=pc;
-  document.getElementById('custCount').textContent=cc;
+async function updateCounts(){
+  try {
+    const [productsResult, customersResult] = await Promise.all([
+      apiCall('/products?page=0&size=1'), // Just get count
+      apiCall('/admin/customers')
+    ]);
+    
+    const pc = productsResult.success && productsResult.data ? productsResult.data.totalElements : 0;
+    const cc = customersResult.success && customersResult.data ? customersResult.data.length : 0;
+    
+    document.getElementById('prodCount').textContent = pc;
+    document.getElementById('custCount').textContent = cc;
+  } catch (error) {
+    console.error('Error updating counts:', error);
+    document.getElementById('prodCount').textContent = '0';
+    document.getElementById('custCount').textContent = '0';
+  }
 }
 
 // ── Logout ──
 function logout(){
   if(!confirm('Logout from admin panel?')) return;
-  localStorage.removeItem('dkw_adminLoggedIn');
+  localStorage.removeItem('decentkids_token');
+  localStorage.removeItem('decentkids_user');
   window.location.href='index.html';
 }
 
@@ -988,7 +1129,23 @@ function logout(){
     document.getElementById('sidebarDefaultIcon').style.display='none';
     setFavicon(icon);
   }
+  
+  // Set admin name in profile section
+  if (user.name) {
+    // Assuming there's an element to display admin name
+    const profileElement = document.querySelector('.admin-name');
+    if (profileElement) {
+      profileElement.textContent = user.name;
+    }
+    
+    // Set admin avatar
+    const avatarElement = document.querySelector('.admin-avatar');
+    if (avatarElement) {
+      avatarElement.textContent = user.name.charAt(0).toUpperCase();
+    }
+  }
 })();
+</script>
 </script>
 </body>
 </html>

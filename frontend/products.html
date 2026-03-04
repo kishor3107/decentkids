@@ -419,78 +419,274 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── API Configuration ──
+const API_BASE = "http://localhost:8080/api";
+
 // ── Auth Guard ──
-if(!localStorage.getItem('dkw_loggedCustomer')) window.location.href='index.html';
+const token = localStorage.getItem('decentkids_token');
+const user = JSON.parse(localStorage.getItem('decentkids_user') || '{}');
+
+if (!token || !user.userId) {
+  window.location.href = 'index.html';
+}
 
 // ── State ──
-const CATS=['All','Tops & T-Shirts','Frocks & Dresses','Pants & Shorts','Ethnic Wear','Winter Wear','Accessories','Footwear','School Uniform'];
-let activeCategory='All';
-let maxPrice=5000;
-let showSaleOnly=false;
-let currentView='grid';
-let currentPage=1;
-const PER_PAGE=12;
+const CATS = ['All', 'TOPS', 'BOTTOMS', 'DRESSES', 'SETS', 'ACCESSORIES', 'FOOTWEAR', 'WINTERWEAR', 'SCHOOLWEAR'];
+const CAT_LABELS = {
+  'All': 'All Products',
+  'TOPS': 'Tops & T-Shirts',
+  'BOTTOMS': 'Pants & Shorts', 
+  'DRESSES': 'Frocks & Dresses',
+  'SETS': 'Sets & Combos',
+  'ACCESSORIES': 'Accessories',
+  'FOOTWEAR': 'Footwear',
+  'WINTERWEAR': 'Winter Wear',
+  'SCHOOLWEAR': 'School Uniform'
+};
+
+let activeCategory = 'All';
+let maxPrice = 5000;
+let showSaleOnly = false;
+let currentView = 'grid';
+let currentPage = 0; // API uses 0-based pagination
+const PER_PAGE = 12;
+let totalPages = 1;
 
 // ── Helpers ──
-function getProducts(){ return JSON.parse(localStorage.getItem('dkw_products')||'[]'); }
-function getCart(){ return JSON.parse(localStorage.getItem('dkw_cart')||'[]'); }
-function saveCart(c){ localStorage.setItem('dkw_cart',JSON.stringify(c)); }
-function showToast(msg){
-  const wrap=document.getElementById('toastWrap');
-  const t=document.createElement('div'); t.className='toast-item';
-  t.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>${msg}`;
-  wrap.appendChild(t); setTimeout(()=>t.remove(),3000);
+function getCart() { return JSON.parse(localStorage.getItem('decentkids_cart') || '[]'); }
+function saveCart(c) { localStorage.setItem('decentkids_cart', JSON.stringify(c)); }
+
+function showToast(msg) {
+  const wrap = document.getElementById('toastWrap');
+  const t = document.createElement('div');
+  t.className = 'toast-item';
+  t.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>${msg}`;
+  wrap.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
 }
-function updateCartCount(){
-  const total=getCart().reduce((s,i)=>s+i.qty,0);
-  document.getElementById('cartCount').textContent=total;
+
+function updateCartCount() {
+  const total = getCart().reduce((s, i) => s + i.qty, 0);
+  document.getElementById('cartCount').textContent = total;
 }
 
 // ── Add to Cart ──
-function addToCart(id){
-  const prod=getProducts().find(p=>p.id===id); if(!prod) return;
-  const cart=getCart();
-  const ex=cart.find(i=>i.id===id);
-  if(ex){ ex.qty+=1; } else {
-    cart.push({id:prod.id,name:prod.name,price:prod.discountPrice||prod.price,
-      image:prod.image,category:prod.category,sizes:prod.sizes,qty:1,stock:prod.stock});
+function addToCart(productId, productData = null) {
+  let prod = productData;
+  
+  // If no product data provided, try to find it in the current products
+  if (!prod && window.currentProducts) {
+    prod = window.currentProducts.find(p => p.id == productId);
   }
-  saveCart(cart); updateCartCount();
-  showToast(prod.name+' added to cart!');
+  
+  if (!prod) {
+    console.error('Product not found:', productId);
+    return;
+  }
+
+  const cart = getCart();
+  const existing = cart.find(i => i.id == productId);
+  
+  if (existing) {
+    existing.qty += 1;
+  } else {
+    cart.push({
+      id: prod.id,
+      name: prod.name,
+      price: prod.price,
+      image: prod.imageUrl,
+      category: prod.category,
+      sizes: prod.sizes,
+      qty: 1,
+      stock: prod.stock
+    });
+  }
+  
+  saveCart(cart);
+  updateCartCount();
+  showToast(`${prod.name} added to cart!`);
+}
+
+// ── API Functions ──
+async function loadProducts() {
+  try {
+    let url = `${API_BASE}/products?page=${currentPage}&size=${PER_PAGE}`;
+    
+    // Add search query
+    const searchQuery = document.getElementById('searchInput').value.trim();
+    if (searchQuery) {
+      url = `${API_BASE}/products/search?query=${encodeURIComponent(searchQuery)}&page=${currentPage}&size=${PER_PAGE}`;
+    }
+    // Add category filter
+    else if (activeCategory !== 'All') {
+      url = `${API_BASE}/products/category/${activeCategory}?page=${currentPage}&size=${PER_PAGE}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+
+    if (data.success && data.data.content) {
+      const products = data.data.content;
+      window.currentProducts = products; // Store for cart functionality
+      
+      // Apply client-side filters (price and sale)
+      let filteredProducts = products.filter(p => {
+        const price = p.price;
+        if (price > maxPrice) return false;
+        if (showSaleOnly && !p.sale) return false; // Note: backend doesn't have sale field yet
+        return true;
+      });
+
+      // Apply sorting
+      const sortValue = document.getElementById('sortSelect').value;
+      applySorting(filteredProducts, sortValue);
+
+      totalPages = Math.ceil(data.data.totalElements / PER_PAGE);
+      
+      // Update result count
+      document.getElementById('resultCount').innerHTML = `
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <path d="M16 10a4 4 0 0 1-8 0"/>
+        </svg>
+        ${data.data.totalElements} product${data.data.totalElements !== 1 ? 's' : ''} found
+      `;
+
+      renderProducts(filteredProducts);
+      renderPagination();
+    } else {
+      console.error('Failed to load products:', data.message);
+      renderEmptyState('Failed to load products');
+    }
+  } catch (error) {
+    console.error('Error loading products:', error);
+    renderEmptyState('Network error. Please try again.');
+  }
+}
+
+function applySorting(products, sortValue) {
+  switch (sortValue) {
+    case 'price-low':
+      products.sort((a, b) => a.price - b.price);
+      break;
+    case 'price-high':
+      products.sort((a, b) => b.price - a.price);
+      break;
+    case 'name-az':
+      products.sort((a, b) => a.name.localeCompare(b.name));
+      break;
+    case 'sale':
+      // Backend doesn't have sale indicator yet, keep original order
+      break;
+    default: // newest
+      // Keep original order from API (newest first)
+      break;
+  }
+}
+
+// ── Render Functions ──
+function renderProducts(products) {
+  const grid = document.getElementById('productGrid');
+  
+  if (products.length === 0) {
+    renderEmptyState('No products found');
+    return;
+  }
+
+  grid.innerHTML = products.map(p => `
+    <div class="product-card">
+      <div class="product-img-wrap">
+        ${p.imageUrl
+          ? `<img src="${p.imageUrl}" alt="${p.name}" loading="lazy"/>`
+          : `<div class="no-img-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <span>No Image</span>
+            </div>`}
+      </div>
+      <div class="product-body">
+        <span class="prod-cat-badge">${p.category || 'UNCATEGORIZED'}</span>
+        <div class="prod-name">${p.name}</div>
+        ${p.description ? `<div class="prod-desc">${p.description}</div>` : ''}
+        <div class="prod-meta">
+          ${p.ageGroup ? `<span>${p.ageGroup}</span>` : ''}
+          ${p.sizes ? `<span>${p.sizes}</span>` : ''}
+        </div>
+        <div class="prod-price-row">
+          <div>
+            <span class="prod-price">₹${p.price}</span>
+          </div>
+          ${p.stock > 0
+            ? `<button class="btn-cart" onclick="addToCart('${p.id}')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="9" cy="21" r="1"/>
+                  <circle cx="20" cy="21" r="1"/>
+                  <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+                </svg>
+                Add
+              </button>`
+            : `<button class="btn-oos">Out of Stock</button>`}
+        </div>
+        ${p.stock > 0 && p.stock <= 5 ? `<div class="stock-low-txt">Only ${p.stock} left!</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderEmptyState(message) {
+  const grid = document.getElementById('productGrid');
+  grid.innerHTML = `
+    <div class="empty-state" style="grid-column:1/-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <h3>No products found</h3>
+      <p>${message || 'Try adjusting your filters or search query'}</p>
+    </div>
+  `;
 }
 
 // ── Build Filter Sidebar HTML ──
-function buildFilterHTML(){
-  const products=getProducts();
-  const allMax=products.length?Math.max(...products.map(p=>p.discountPrice||p.price),500):5000;
+function buildFilterHTML() {
   return `
     <div class="filter-card">
       <div class="filter-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="6" x2="20" y2="6"/>
+          <line x1="8" y1="12" x2="16" y2="12"/>
+          <line x1="11" y1="18" x2="13" y2="18"/>
+        </svg>
         Categories
       </div>
-      ${CATS.map(c=>`
-        <div class="filter-option ${activeCategory===c?'active-cat':''}" onclick="setCategory('${c}')">
-          <input type="checkbox" ${activeCategory===c?'checked':''} onchange="setCategory('${c}')"/> ${c}
+      ${CATS.map(c => `
+        <div class="filter-option ${activeCategory === c ? 'active-cat' : ''}" onclick="setCategory('${c}')">
+          <input type="radio" name="category" ${activeCategory === c ? 'checked' : ''}/> ${CAT_LABELS[c] || c}
         </div>`).join('')}
     </div>
     <div class="filter-card">
       <div class="filter-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="1" x2="12" y2="23"/>
+          <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
         Max Price
       </div>
-      <input type="range" class="price-range" id="priceRange" min="0" max="${allMax}" value="${Math.min(maxPrice,allMax)}" oninput="setMaxPrice(this.value)"/>
-      <div class="price-display"><span>₹0</span><span id="priceVal">₹${Math.min(maxPrice,allMax)}</span></div>
-    </div>
-    <div class="filter-card">
-      <div class="filter-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-        Sale Items
+      <input type="range" class="price-range" id="priceRange" min="0" max="5000" value="${maxPrice}" oninput="setMaxPrice(this.value)"/>
+      <div class="price-display">
+        <span>₹0</span>
+        <span id="priceVal">₹${maxPrice}</span>
       </div>
-      <label class="filter-option" style="cursor:pointer">
-        <input type="checkbox" ${showSaleOnly?'checked':''} onchange="toggleSale(this.checked)" style="accent-color:var(--pink);width:15px;height:15px"/>
-        Show sale items only
-      </label>
     </div>
     <button class="btn-clear-filter" onclick="clearFilters()">
       Clear All Filters
@@ -498,169 +694,133 @@ function buildFilterHTML(){
 }
 
 // ── Render Filters ──
-function renderFilters(){
-  const html=buildFilterHTML();
-  document.getElementById('sidebarFilters').innerHTML=html;
-  document.getElementById('drawerContent').innerHTML=html;
-  // mobile chips
-  const chips=CATS.map(c=>`<div class="cat-chip-sm ${activeCategory===c?'active':''}" onclick="setCategory('${c}')">${c}</div>`).join('');
-  document.getElementById('mobileCatChips').innerHTML=chips;
+function renderFilters() {
+  const html = buildFilterHTML();
+  document.getElementById('sidebarFilters').innerHTML = html;
+  document.getElementById('drawerContent').innerHTML = html;
+  
+  // Mobile chips
+  const chips = CATS.map(c => `
+    <div class="cat-chip-sm ${activeCategory === c ? 'active' : ''}" onclick="setCategory('${c}')">
+      ${CAT_LABELS[c] || c}
+    </div>`).join('');
+  document.getElementById('mobileCatChips').innerHTML = chips;
 }
 
 // ── Filter Controls ──
-function setCategory(cat){ activeCategory=cat; currentPage=1; renderFilters(); applyFilters(); }
-function setMaxPrice(v){ maxPrice=parseInt(v); document.querySelectorAll('#priceVal').forEach(el=>el.textContent='₹'+v); applyFilters(); }
-function toggleSale(v){ showSaleOnly=v; applyFilters(); }
-function clearFilters(){ activeCategory='All'; maxPrice=99999; showSaleOnly=false; currentPage=1; document.getElementById('searchInput').value=''; document.getElementById('sortSelect').value='newest'; renderFilters(); applyFilters(); }
-
-// ── Apply All Filters + Sort + Pagination ──
-function applyFilters(){
-  let products=getProducts();
-  const q=document.getElementById('searchInput').value.trim().toLowerCase();
-  const sort=document.getElementById('sortSelect').value;
-
-  // filter
-  if(activeCategory!=='All') products=products.filter(p=>p.category===activeCategory);
-  products=products.filter(p=>(p.discountPrice||p.price)<=maxPrice);
-  if(showSaleOnly) products=products.filter(p=>p.sale);
-  if(q) products=products.filter(p=>
-    p.name.toLowerCase().includes(q)||
-    (p.description||'').toLowerCase().includes(q)||
-    (p.category||'').toLowerCase().includes(q)
-  );
-
-  // sort
-  if(sort==='price-low') products.sort((a,b)=>(a.discountPrice||a.price)-(b.discountPrice||b.price));
-  else if(sort==='price-high') products.sort((a,b)=>(b.discountPrice||b.price)-(a.discountPrice||a.price));
-  else if(sort==='name-az') products.sort((a,b)=>a.name.localeCompare(b.name));
-  else if(sort==='sale') products.sort((a,b)=>(b.sale?1:0)-(a.sale?1:0));
-  else products.reverse(); // newest first (added latest = end of array)
-
-  // result count
-  document.getElementById('resultCount').innerHTML=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>${products.length} product${products.length!==1?'s':''} found`;
-
-  // pagination
-  const totalPages=Math.ceil(products.length/PER_PAGE)||1;
-  if(currentPage>totalPages) currentPage=1;
-  const start=(currentPage-1)*PER_PAGE;
-  const paginated=products.slice(start,start+PER_PAGE);
-
-  renderProducts(paginated, products.length);
-  renderPagination(totalPages);
+function setCategory(cat) {
+  activeCategory = cat;
+  currentPage = 0;
+  renderFilters();
+  loadProducts();
 }
 
-// ── Render Products ──
-function renderProducts(products, total){
-  const grid=document.getElementById('productGrid');
-  if(products.length===0){
-    grid.innerHTML=`<div class="empty-state" style="grid-column:1/-1">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <h3>No products found</h3>
-      <p>Try adjusting your filters or search query</p>
-    </div>`; return;
-  }
-  grid.innerHTML=products.map(p=>{
-    const price=p.discountPrice||p.price;
-    const pct=p.discountPrice?Math.round((1-p.discountPrice/p.price)*100):0;
-    return `
-    <div class="product-card">
-      <div class="product-img-wrap">
-        ${p.image
-          ?`<img src="${p.image}" alt="${p.name}" loading="lazy"/>`
-          :`<div class="no-img-placeholder">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-              <span>No Image</span>
-            </div>`}
-        ${p.sale?'<span class="sale-badge-pill">SALE</span>':''}
-        ${pct>0?`<span class="discount-pct">${pct}% OFF</span>`:''}
-      </div>
-      <div class="product-body">
-        <span class="prod-cat-badge">${p.category}</span>
-        <div class="prod-name">${p.name}</div>
-        ${p.description?`<div class="prod-desc">${p.description}</div>`:''}
-        <div class="prod-meta">
-          ${p.ageGroup?`<span>${p.ageGroup}</span>`:''}
-          ${p.sizes?`<span>${p.sizes}</span>`:''}
-        </div>
-        <div class="prod-price-row">
-          <div>
-            ${p.discountPrice
-              ?`<span class="prod-price-disc">₹${p.discountPrice}</span><span class="prod-price-orig">₹${p.price}</span>`
-              :`<span class="prod-price">₹${p.price}</span>`}
-          </div>
-          ${p.stock>0
-            ?`<button class="btn-cart" onclick="addToCart('${p.id}')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
-                Add
-              </button>`
-            :`<button class="btn-oos">Out of Stock</button>`}
-        </div>
-        ${p.stock>0&&p.stock<=5?`<div class="stock-low-txt">Only ${p.stock} left!</div>`:''}
-      </div>
-    </div>`;
-  }).join('');
+function setMaxPrice(v) {
+  maxPrice = parseInt(v);
+  document.querySelectorAll('#priceVal').forEach(el => el.textContent = '₹' + v);
+  loadProducts();
+}
+
+function toggleSale(v) {
+  showSaleOnly = v;
+  loadProducts();
+}
+
+function clearFilters() {
+  activeCategory = 'All';
+  maxPrice = 5000;
+  showSaleOnly = false;
+  currentPage = 0;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('sortSelect').value = 'newest';
+  renderFilters();
+  loadProducts();
+}
+
+function applyFilters() {
+  currentPage = 0; // Reset to first page when filtering
+  loadProducts();
 }
 
 // ── Pagination ──
-function renderPagination(total){
-  const wrap=document.getElementById('pagination');
-  if(total<=1){ wrap.innerHTML=''; return; }
-  let html=`<button class="page-btn" onclick="goPage(${currentPage-1})" ${currentPage===1?'disabled':''}>
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-  </button>`;
-  for(let i=1;i<=total;i++){
-    if(total>7 && i>2 && i<total-1 && Math.abs(i-currentPage)>1){ if(i===3||i===total-2) html+='<span style="color:var(--gray);padding:0 4px">...</span>'; continue; }
-    html+=`<button class="page-btn ${i===currentPage?'active':''}" onclick="goPage(${i})">${i}</button>`;
+function renderPagination() {
+  const wrap = document.getElementById('pagination');
+  if (totalPages <= 1) {
+    wrap.innerHTML = '';
+    return;
   }
-  html+=`<button class="page-btn" onclick="goPage(${currentPage+1})" ${currentPage===total?'disabled':''}>
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-  </button>`;
-  wrap.innerHTML=html;
+  
+  const currentPageDisplay = currentPage + 1; // Convert to 1-based for display
+  let html = `
+    <button class="page-btn" onclick="goPage(${currentPage - 1})" ${currentPage === 0 ? 'disabled' : ''}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>`;
+  
+  for (let i = 1; i <= totalPages; i++) {
+    if (totalPages > 7 && i > 2 && i < totalPages - 1 && Math.abs(i - currentPageDisplay) > 1) {
+      if (i === 3 || i === totalPages - 2) html += '<span style="color:var(--gray);padding:0 4px">...</span>';
+      continue;
+    }
+    html += `<button class="page-btn ${i === currentPageDisplay ? 'active' : ''}" onclick="goPage(${i - 1})">${i}</button>`;
+  }
+  
+  html += `
+    <button class="page-btn" onclick="goPage(${currentPage + 1})" ${currentPage === totalPages - 1 ? 'disabled' : ''}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+    </button>`;
+  
+  wrap.innerHTML = html;
 }
-function goPage(p){ currentPage=p; applyFilters(); window.scrollTo({top:0,behavior:'smooth'}); }
+
+function goPage(p) {
+  if (p < 0 || p >= totalPages) return;
+  currentPage = p;
+  loadProducts();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
 
 // ── View toggle ──
-function setView(v){
-  currentView=v;
-  const grid=document.getElementById('productGrid');
-  document.getElementById('gridViewBtn').classList.toggle('active',v==='grid');
-  document.getElementById('listViewBtn').classList.toggle('active',v==='list');
-  grid.classList.toggle('list-view',v==='list');
+function setView(v) {
+  currentView = v;
+  const grid = document.getElementById('productGrid');
+  document.getElementById('gridViewBtn').classList.toggle('active', v === 'grid');
+  document.getElementById('listViewBtn').classList.toggle('active', v === 'list');
+  grid.classList.toggle('list-view', v === 'list');
 }
 
 // ── Drawer (mobile) ──
-function toggleDrawer(){ document.getElementById('filterDrawer').classList.toggle('open'); }
-function closeDrawer(e){ if(e.target===document.getElementById('filterDrawer')) toggleDrawer(); }
+function toggleDrawer() {
+  document.getElementById('filterDrawer').classList.toggle('open');
+}
+
+function closeDrawer(e) {
+  if (e.target === document.getElementById('filterDrawer')) toggleDrawer();
+}
 
 // ── Profile initial ──
-function loadProfile(){
-  const user=JSON.parse(localStorage.getItem('dkw_loggedCustomer')||'{}');
-  if(user.name) document.getElementById('profileBtn').textContent=user.name.charAt(0).toUpperCase();
+function loadProfile() {
+  if (user.name) {
+    document.getElementById('profileBtn').textContent = user.name.charAt(0).toUpperCase();
+  }
 }
 
 // ── Read URL param for category ──
-function readURLParam(){
-  const params=new URLSearchParams(window.location.search);
-  const cat=params.get('cat');
-  if(cat && CATS.includes(cat)) activeCategory=cat;
-  const products=getProducts();
-  maxPrice=products.length?Math.max(...products.map(p=>p.discountPrice||p.price),500):5000;
+function readURLParam() {
+  const params = new URLSearchParams(window.location.search);
+  const cat = params.get('cat');
+  if (cat && CATS.includes(cat)) activeCategory = cat;
 }
 
 // ── Init ──
 readURLParam();
 renderFilters();
-applyFilters();
+loadProducts();
 updateCartCount();
 loadProfile();
-
-// favicon
-const icon=localStorage.getItem('dkw_siteIcon');
-if(icon){
-  let link=document.querySelector("link[rel~='icon']");
-  if(!link){link=document.createElement('link');link.rel='icon';document.head.appendChild(link);}
-  link.href=icon;
-}
 </script>
 </body>
 </html>

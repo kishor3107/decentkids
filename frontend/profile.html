@@ -394,13 +394,24 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── API Configuration ──
+const API_BASE = "http://localhost:8080/api";
+
 // ── Auth Guard ──
-if(!localStorage.getItem('dkw_loggedCustomer')) window.location.href='index.html';
+const token = localStorage.getItem('decentkids_token');
+const user = JSON.parse(localStorage.getItem('decentkids_user') || '{}');
+
+if (!token || !user.userId || user.role !== 'CUSTOMER') {
+  localStorage.removeItem('decentkids_token');
+  localStorage.removeItem('decentkids_user');
+  window.location.href = 'index.html';
+}
+
+// ── Data Cache ── 
+let userOrders = [];
 
 // ── Helpers ──
-function getUser(){ return JSON.parse(localStorage.getItem('dkw_loggedCustomer')||'{}'); }
-function getCart(){ return JSON.parse(localStorage.getItem('dkw_cart')||'[]'); }
-function getOrders(){ return JSON.parse(localStorage.getItem('dkw_orders')||'[]'); }
+function getCart(){ return JSON.parse(localStorage.getItem('decentkids_cart')||'[]'); }
 function showToast(msg,type='success'){
   const wrap=document.getElementById('toastWrap');
   const t=document.createElement('div'); t.className='toast-item';
@@ -412,6 +423,35 @@ function showAlert(id,msg,type){
   const el=document.getElementById(id);
   el.className='alert-box alert-'+type; el.textContent=msg; el.style.display='block';
   setTimeout(()=>el.style.display='none',4000);
+}
+
+// ── API Helpers ──
+async function apiCall(endpoint, method = 'GET', data = null) {
+  try {
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    };
+    
+    if (data) {
+      options.body = JSON.stringify(data);
+    }
+    
+    const response = await fetch(`${API_BASE}${endpoint}`, options);
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.message || 'API request failed');
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('API Error:', error);
+    throw error;
+  }
 }
 
 // ── Tab Switch ──
@@ -428,35 +468,50 @@ function switchTab(name, btn){
 
 // ── Load Sidebar ──
 function loadSidebar(){
-  const user=getUser();
   document.getElementById('avatarCircle').textContent=user.name?user.name.charAt(0).toUpperCase():'?';
   document.getElementById('sidebarName').textContent=user.name||'Customer';
   document.getElementById('sidebarEmail').textContent=user.email||'';
+  
   // order badge
-  const myOrders=getUserOrders();
-  if(myOrders.length>0){
+  if(userOrders.length>0){
     const badge=document.getElementById('orderBadge');
-    badge.textContent=myOrders.length; badge.style.display='inline';
+    badge.textContent=userOrders.length; badge.style.display='inline';
   }
+  
   // cart count
   const cartTotal=getCart().reduce((s,i)=>s+i.qty,0);
   document.getElementById('cartCount').textContent=cartTotal;
 }
 
-// ── Get user's orders ──
-function getUserOrders(){
-  const user=getUser();
-  const allOrders=getOrders();
-  return allOrders.filter(o=>o.customerId===user.id||o.customerEmail===user.email).reverse();
+// ── Load User Orders from API ──
+async function loadUserOrders() {
+  try {
+    const result = await apiCall(`/orders/customer/${user.userId}`);
+    
+    if (result.success && result.data) {
+      userOrders = result.data.reverse(); // Newest first
+      return userOrders;
+    } else {
+      console.error('Failed to load orders:', result.message);
+      userOrders = [];
+      return [];
+    }
+  } catch (error) {
+    console.error('Error loading orders:', error);
+    userOrders = [];
+    return [];
+  }
 }
 
 // ── Overview ──
-function loadOverview(){
-  const user=getUser();
-  const orders=getUserOrders();
-  const spent=orders.reduce((s,o)=>s+(o.total||0),0);
-  const pending=orders.filter(o=>o.status==='Pending').length;
-  const delivered=orders.filter(o=>o.status==='Delivered').length;
+async function loadOverview(){
+  await loadUserOrders();
+  
+  const orders = userOrders;
+  const spent = orders.reduce((s,o)=>s+(o.total||0),0);
+  const pending = orders.filter(o=>o.status==='PENDING').length;
+  const delivered = orders.filter(o=>o.status==='DELIVERED').length;
+  
   document.getElementById('ovTotalOrders').textContent=orders.length;
   document.getElementById('ovTotalSpent').textContent='₹'+spent.toLocaleString('en-IN');
   document.getElementById('ovPending').textContent=pending;
@@ -470,8 +525,8 @@ function loadOverview(){
     {lbl:'Age',val:user.age||'—'},
     {lbl:'Gender',val:user.gender||'—'},
     {lbl:'Address',val:user.address||'—'},
-    {lbl:'Member Since',val:user.createdAt||'—'},
-    {lbl:'Customer ID',val:user.id||'—'},
+    {lbl:'Member Since',val:user.createDate||'—'},
+    {lbl:'Customer ID',val:user.userId||'—'},
   ];
   document.getElementById('personalPreview').innerHTML=fields.map(f=>`
     <div class="col-6 col-md-4">
@@ -496,16 +551,30 @@ function loadOverview(){
 
 // ── Render order card HTML ──
 function renderOrderCard(o){
-  const statusClass={'Pending':'status-pending','Confirmed':'status-confirmed','Delivered':'status-delivered','Cancelled':'status-cancelled'}[o.status]||'status-pending';
-  const itemNames=o.items?o.items.map(i=>`<span>${i.name}</span> ×${i.qty}`).join(', '):'—';
+  const statusMap = {
+    'PENDING': 'status-pending',
+    'CONFIRMED': 'status-confirmed', 
+    'DELIVERED': 'status-delivered',
+    'CANCELLED': 'status-cancelled'
+  };
+  const statusClass = statusMap[o.status] || 'status-pending';
+  
+  // Format order items
+  const itemNames = o.orderItems && o.orderItems.length > 0 
+    ? o.orderItems.map(i=>`<span>${i.productName || 'Product'}</span> ×${i.quantity}`).join(', ')
+    : '—';
+    
+  // Format date if available
+  const orderDate = o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '—';
+  
   return `
     <div class="order-card">
       <div class="order-header">
         <div>
-          <div class="order-id">${o.id}</div>
-          <div class="order-date">${o.date||''} ${o.time?'at '+o.time:''}</div>
+          <div class="order-id">DKW${o.id}</div>
+          <div class="order-date">${orderDate}</div>
         </div>
-        <span class="order-status ${statusClass}">${o.status||'Pending'}</span>
+        <span class="order-status ${statusClass}">${o.status||'PENDING'}</span>
       </div>
       <div class="order-items-list">${itemNames}</div>
       <div class="order-footer">
@@ -522,10 +591,22 @@ function renderOrderCard(o){
 
 // ── Load Orders ──
 let currentFilter='all';
-function loadOrders(filter){
+async function loadOrders(filter){
   currentFilter=filter;
-  const orders=getUserOrders();
-  const filtered=filter==='all'?orders:orders.filter(o=>o.status===filter);
+  
+  // Load orders if not already loaded
+  if (userOrders.length === 0) {
+    await loadUserOrders();
+  }
+  
+  const orders = userOrders;
+  const filtered = filter==='all' ? orders : orders.filter(o=>{
+    if (filter === 'Pending') return o.status === 'PENDING';
+    if (filter === 'Confirmed') return o.status === 'CONFIRMED';
+    if (filter === 'Delivered') return o.status === 'DELIVERED';
+    return false;
+  });
+  
   const container=document.getElementById('ordersListContainer');
   if(filtered.length===0){
     container.innerHTML=`<div class="empty-orders">
@@ -535,7 +616,8 @@ function loadOrders(filter){
       ${filter==='all'?`<a href="products.html" style="display:inline-flex;align-items:center;gap:6px;padding:10px 22px;background:var(--pink);color:var(--white);border-radius:10px;text-decoration:none;font-weight:600;font-size:0.88rem">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
         Browse Products</a>`:''}
-    </div>`; return;
+    </div>`; 
+    return;
   }
   container.innerHTML=filtered.map(o=>renderOrderCard(o)).join('');
 }
@@ -554,38 +636,47 @@ function filterOrders(filter, btn){
 
 // ── Order Detail Modal ──
 function openOrderModal(orderId){
-  const orders=getUserOrders();
-  const o=orders.find(ord=>ord.id===orderId); if(!o) return;
-  const statusClass={'Pending':'status-pending','Confirmed':'status-confirmed','Delivered':'status-delivered','Cancelled':'status-cancelled'}[o.status]||'status-pending';
+  const o=userOrders.find(ord=>ord.id==orderId); 
+  if(!o) return;
+  
+  const statusMap = {
+    'PENDING': 'status-pending',
+    'CONFIRMED': 'status-confirmed', 
+    'DELIVERED': 'status-delivered',
+    'CANCELLED': 'status-cancelled'
+  };
+  const statusClass = statusMap[o.status] || 'status-pending';
+  const orderDate = o.orderDate ? new Date(o.orderDate).toLocaleDateString('en-IN') : '—';
+  
   document.getElementById('orderModalContent').innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:0.82rem;font-weight:700;color:var(--black)">${o.id}</div>
-        <div style="font-size:0.75rem;color:var(--gray)">${o.date||''} ${o.time?'· '+o.time:''}</div>
+        <div style="font-size:0.82rem;font-weight:700;color:var(--black)">DKW${o.id}</div>
+        <div style="font-size:0.75rem;color:var(--gray)">${orderDate}</div>
       </div>
-      <span class="order-status ${statusClass}">${o.status||'Pending'}</span>
+      <span class="order-status ${statusClass}">${o.status||'PENDING'}</span>
     </div>
     <div style="font-size:0.85rem;font-weight:700;color:var(--black);margin-bottom:10px">Items Ordered</div>
     <div style="background:var(--gray-light);border-radius:10px;padding:12px;margin-bottom:16px">
-      ${(o.items||[]).map(item=>`
+      ${(o.orderItems||[]).map(item=>`
         <div class="order-item-row">
-          <span style="font-weight:600">${item.name}</span>
-          <span style="color:var(--gray)">×${item.qty}</span>
-          <span style="font-weight:700;color:var(--pink-dark)">₹${(item.total||0).toLocaleString('en-IN')}</span>
+          <span style="font-weight:600">${item.productName || 'Product'}</span>
+          <span style="color:var(--gray)">×${item.quantity}</span>
+          <span style="font-weight:700;color:var(--pink-dark)">₹${(item.price * item.quantity).toLocaleString('en-IN')}</span>
         </div>`).join('')}
     </div>
     <div style="font-size:0.85rem;font-weight:700;color:var(--black);margin-bottom:10px">Payment Summary</div>
     <div style="background:var(--gray-light);border-radius:10px;padding:12px">
-      <div class="order-item-row"><span>Subtotal</span><span>₹${(o.subtotal||0).toLocaleString('en-IN')}</span></div>
-      <div class="order-item-row"><span>Delivery</span><span>${o.delivery===0?'<span style="color:#166534;font-weight:600">Free</span>':'₹'+o.delivery}</span></div>
-      ${o.discount>0?`<div class="order-item-row"><span>Discount (${o.coupon})</span><span style="color:#db2777;font-weight:600">-₹${o.discount.toLocaleString('en-IN')}</span></div>`:''}
+      <div class="order-item-row"><span>Subtotal</span><span>₹${((o.total||0) - (o.deliveryCharge||0) + (o.discount||0)).toLocaleString('en-IN')}</span></div>
+      <div class="order-item-row"><span>Delivery</span><span>${(o.deliveryCharge||0)===0?'<span style="color:#166534;font-weight:600">Free</span>':'₹'+(o.deliveryCharge||0)}</span></div>
+      ${(o.discount||0)>0?`<div class="order-item-row"><span>Discount${o.couponCode?' ('+o.couponCode+')':''}</span><span style="color:#db2777;font-weight:600">-₹${(o.discount||0).toLocaleString('en-IN')}</span></div>`:''}
       <div class="order-item-row" style="font-weight:800;font-size:0.9rem;border-bottom:none">
         <span style="color:var(--black)">Total Paid</span>
         <span style="color:var(--pink-dark)">₹${(o.total||0).toLocaleString('en-IN')}</span>
       </div>
     </div>
     <div style="margin-top:14px;padding:12px;background:var(--pink-light);border-radius:10px;font-size:0.8rem;color:var(--pink-dark)">
-      <strong>Delivery Address:</strong> ${o.customerName||'—'} · ${getUser().address||'—'}
+      <strong>Customer:</strong> ${user.name||'—'} · ${user.address||'No address provided'}
     </div>
   `;
   document.getElementById('orderModal').classList.add('open');
@@ -594,34 +685,47 @@ function closeOrderModal(){ document.getElementById('orderModal').classList.remo
 
 // ── Edit Profile ──
 function loadEditForm(){
-  const user=getUser();
-  document.getElementById('edit-id').value=user.id||'';
-  document.getElementById('edit-name').value=user.name||'';
-  document.getElementById('edit-age').value=user.age||'';
-  document.getElementById('edit-gender').value=user.gender||'Male';
-  document.getElementById('edit-phone').value=user.phone||'';
-  document.getElementById('edit-email').value=user.email||'';
-  document.getElementById('edit-address').value=user.address||'';
+  document.getElementById('edit-id').value = user.userId || '';
+  document.getElementById('edit-name').value = user.name || '';
+  document.getElementById('edit-age').value = user.age || '';
+  document.getElementById('edit-gender').value = user.gender || 'Male';
+  document.getElementById('edit-phone').value = user.phone || '';
+  document.getElementById('edit-email').value = user.email || '';
+  document.getElementById('edit-address').value = user.address || '';
 }
 
-function saveProfile(){
+async function saveProfile(){
   const name=document.getElementById('edit-name').value.trim();
   const age=document.getElementById('edit-age').value.trim();
   const gender=document.getElementById('edit-gender').value;
   const phone=document.getElementById('edit-phone').value.trim();
   const address=document.getElementById('edit-address').value.trim();
-  if(!name||!age||!phone||!address){ showAlert('edit-alert','Please fill all required fields.','error'); return; }
-  if(!/^[0-9]{10}$/.test(phone)){ showAlert('edit-alert','Enter a valid 10-digit phone number.','error'); return; }
-  const user=getUser();
-  const updated={...user,name,age,gender,phone,address};
-  localStorage.setItem('dkw_loggedCustomer',JSON.stringify(updated));
-  // update in customers array too
-  const customers=JSON.parse(localStorage.getItem('dkw_customers')||'[]');
-  const ci=customers.findIndex(c=>c.id===user.id);
-  if(ci>-1){ customers[ci]={...customers[ci],name,age,gender,phone,address}; localStorage.setItem('dkw_customers',JSON.stringify(customers)); }
-  showAlert('edit-alert','Profile updated successfully!','success');
-  loadSidebar();
-  showToast('Profile updated!');
+  
+  if(!name||!age||!phone||!address){ 
+    showAlert('edit-alert','Please fill all required fields.','error'); 
+    return; 
+  }
+  if(!/^[0-9]{10}$/.test(phone)){ 
+    showAlert('edit-alert','Enter a valid 10-digit phone number.','error'); 
+    return; 
+  }
+
+  try {
+    // Note: Would need a customer profile update endpoint in backend
+    // For now, update localStorage only
+    const updatedUser = {...user, name, age, gender, phone, address};
+    localStorage.setItem('decentkids_user', JSON.stringify(updatedUser));
+    
+    showAlert('edit-alert','Profile updated successfully! (Note: Backend profile update endpoint needed)','success');
+    loadSidebar();
+    showToast('Profile updated!');
+    
+    // Update global user object
+    Object.assign(user, updatedUser);
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    showAlert('edit-alert','Error updating profile. Please try again.','error');
+  }
 }
 
 // ── Change Password ──
@@ -629,16 +733,13 @@ function changePassword(){
   const cur=document.getElementById('cur-pass').value;
   const nw=document.getElementById('new-pass').value;
   const conf=document.getElementById('conf-pass').value;
-  const user=getUser();
-  if(cur!==user.password){ showAlert('pass-alert','Current password is incorrect.','error'); return; }
+  
+  if(cur.length < 6){ showAlert('pass-alert','Current password is too short.','error'); return; }
   if(nw.length<6){ showAlert('pass-alert','Password must be at least 6 characters.','error'); return; }
   if(nw!==conf){ showAlert('pass-alert','Passwords do not match.','error'); return; }
-  const updated={...user,password:nw};
-  localStorage.setItem('dkw_loggedCustomer',JSON.stringify(updated));
-  const customers=JSON.parse(localStorage.getItem('dkw_customers')||'[]');
-  const ci=customers.findIndex(c=>c.id===user.id);
-  if(ci>-1){ customers[ci].password=nw; localStorage.setItem('dkw_customers',JSON.stringify(customers)); }
-  showAlert('pass-alert','Password changed successfully!','success');
+  
+  // TODO: Implement API call to change password
+  showAlert('pass-alert','Password change not implemented yet. This would need a backend endpoint.','error');
   ['cur-pass','new-pass','conf-pass'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('strengthBar').style.width='0';
   document.getElementById('strengthText').textContent='';
@@ -670,21 +771,15 @@ function checkStrength(val){
 // ── Logout ──
 function logout(){
   if(!confirm('Are you sure you want to logout?')) return;
-  localStorage.removeItem('dkw_loggedCustomer');
+  localStorage.removeItem('decentkids_token');
+  localStorage.removeItem('decentkids_user');
   window.location.href='index.html';
-}
-
-// ── Favicon ──
-const icon=localStorage.getItem('dkw_siteIcon');
-if(icon){
-  let link=document.querySelector("link[rel~='icon']");
-  if(!link){link=document.createElement('link');link.rel='icon';document.head.appendChild(link);}
-  link.href=icon;
 }
 
 // ── Init ──
 loadSidebar();
 loadOverview();
+</script>
 </script>
 </body>
 </html>

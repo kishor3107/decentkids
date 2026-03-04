@@ -43,6 +43,23 @@ public class OrderController {
         return ResponseEntity.ok(ApiResponse.success("Order placed successfully", order));
     }
 
+    @PostMapping
+    @PreAuthorize("hasAnyRole('CUSTOMER','ADMIN')")
+    @Operation(summary = "Place a new order (frontend compatible)")
+    public ResponseEntity<ApiResponse<Order>> placeOrderAlt(@Valid @RequestBody PlaceOrderRequestAlt request) {
+        List<OrderService.OrderItemRequest> items = request.getOrderItems().stream()
+                .map(i -> new OrderService.OrderItemRequest(i.getProductId(), i.getQuantity(), "M")) // Default size
+                .toList();
+
+        Order order = orderService.placeOrder(
+            request.getCustomerId(), 
+            items, 
+            request.getNotes() != null ? request.getNotes() : "No special instructions", 
+            "ONLINE"
+        );
+        return ResponseEntity.ok(ApiResponse.success("Order placed successfully", order));
+    }
+
     @GetMapping("/customer/{customerId}")
     @PreAuthorize("hasAnyRole('CUSTOMER','ADMIN')")
     @Operation(summary = "Get all orders for a customer")
@@ -90,5 +107,23 @@ public class OrderController {
         private Long productId;
         private Integer quantity;
         private String size;
+    }
+
+    @Data
+    public static class PlaceOrderRequestAlt {
+        private Long customerId;
+        private List<OrderItemDto> orderItems;
+        private java.math.BigDecimal total;
+        private java.math.BigDecimal deliveryCharge;
+        private java.math.BigDecimal discount;
+        private String couponCode;
+        private String notes;
+    }
+
+    @Data
+    public static class OrderItemDto {
+        private Long productId;
+        private Integer quantity;
+        private java.math.BigDecimal price;
     }
 }

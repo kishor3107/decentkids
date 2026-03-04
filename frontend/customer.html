@@ -718,162 +718,198 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// ── API Configuration ──
+const API_BASE = "http://localhost:8080/api";
+
 // ── Auth Guard ──
-if(!localStorage.getItem('dkw_loggedCustomer')){
-  window.location.href='index.html';
+const token = localStorage.getItem('decentkids_token');
+const user = JSON.parse(localStorage.getItem('decentkids_user') || '{}');
+
+if (!token || !user.userId) {
+  window.location.href = 'index.html';
 }
 
 // ── Helpers ──
-function getCart(){ return JSON.parse(localStorage.getItem('dkw_cart')||'[]'); }
-function saveCart(c){ localStorage.setItem('dkw_cart',JSON.stringify(c)); }
-function getProducts(){ return JSON.parse(localStorage.getItem('dkw_products')||'[]'); }
+function getCart() { return JSON.parse(localStorage.getItem('decentkids_cart') || '[]'); }
+function saveCart(c) { localStorage.setItem('decentkids_cart', JSON.stringify(c)); }
 
 // ── Toast ──
-function showToast(msg){
-  const wrap=document.getElementById('toastWrap');
-  const t=document.createElement('div');
-  t.className='toast-item';
-  t.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>${msg}`;
+function showToast(msg) {
+  const wrap = document.getElementById('toastWrap');
+  const t = document.createElement('div');
+  t.className = 'toast-item';
+  t.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>${msg}`;
   wrap.appendChild(t);
-  setTimeout(()=>t.remove(),3000);
+  setTimeout(() => t.remove(), 3000);
 }
 
 // ── Cart Count ──
-function updateCartCount(){
-  const cart=getCart();
-  const total=cart.reduce((s,i)=>s+i.qty,0);
-  document.getElementById('cartCount').textContent=total;
+function updateCartCount() {
+  const cart = getCart();
+  const total = cart.reduce((s, i) => s + i.qty, 0);
+  document.getElementById('cartCount').textContent = total;
 }
 
 // ── Add to Cart ──
-function addToCart(id){
-  const products=getProducts();
-  const prod=products.find(p=>p.id===id);
-  if(!prod) return;
-  const cart=getCart();
-  const existing=cart.find(i=>i.id===id);
-  if(existing){
-    existing.qty+=1;
+function addToCart(productId, productData = null) {
+  let prod = productData;
+  
+  // If no product data provided, try to find it in the loaded products
+  if (!prod && window.featuredProducts) {
+    prod = window.featuredProducts.find(p => p.id == productId);
+  }
+  
+  if (!prod) {
+    console.error('Product not found:', productId);
+    return;
+  }
+
+  const cart = getCart();
+  const existing = cart.find(i => i.id == productId);
+  
+  if (existing) {
+    existing.qty += 1;
   } else {
     cart.push({
-      id:prod.id, name:prod.name, price:prod.discountPrice||prod.price,
-      image:prod.image, category:prod.category, sizes:prod.sizes,
-      qty:1, stock:prod.stock
+      id: prod.id,
+      name: prod.name,
+      price: prod.price,
+      image: prod.imageUrl,
+      category: prod.category,
+      sizes: prod.sizes,
+      qty: 1,
+      stock: prod.stock
     });
   }
+  
   saveCart(cart);
   updateCartCount();
   showToast(`${prod.name} added to cart!`);
 }
 
-// ── Load Store Info ──
-function loadStoreInfo(){
-  const info=JSON.parse(localStorage.getItem('dkw_storeInfo')||'{}');
-  if(info.tagline){
-    document.getElementById('heroTagline').textContent=info.tagline;
-    document.getElementById('heroSubtag').textContent='';
-  }
-  if(info.about) document.getElementById('aboutText').textContent=info.about;
-  if(info.phone) document.getElementById('contactPhone').textContent=info.phone;
-  if(info.email) document.getElementById('contactEmail').textContent=info.email;
-  if(info.address) document.getElementById('contactAddress').textContent=info.address;
-  if(info.storeName) document.title=info.storeName+' – Home';
-  const banner=localStorage.getItem('dkw_banner');
-  if(banner){
-    const b=document.getElementById('heroBanner');
-    b.src=banner; b.style.display='block';
-  }
-  const icon=localStorage.getItem('dkw_siteIcon');
-  if(icon){
-    let link=document.querySelector("link[rel~='icon']");
-    if(!link){link=document.createElement('link');link.rel='icon';document.head.appendChild(link);}
-    link.href=icon;
+// ── Load Featured Products from API ──
+async function loadFeaturedProducts() {
+  try {
+    const response = await fetch(`${API_BASE}/products?page=0&size=8`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+
+    if (data.success && data.data.content) {
+      const products = data.data.content;
+      window.featuredProducts = products; // Store for cart functionality
+      
+      // Update stats
+      document.getElementById('statProducts').textContent = data.data.totalElements + '+';
+      
+      if (products.length === 0) {
+        return;
+      }
+
+      const grid = document.getElementById('featuredGrid');
+      grid.innerHTML = products.map(p => `
+        <div class="col-6 col-md-4 col-lg-3">
+          <div class="product-card">
+            <div class="product-img-wrap">
+              ${p.imageUrl
+                ? `<img src="${p.imageUrl}" alt="${p.name}"/>`
+                : `<div class="product-no-img">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    <span>No Image</span>
+                  </div>`}
+            </div>
+            <div class="product-body">
+              <span class="product-category">${p.category || 'UNCATEGORIZED'}</span>
+              <div class="product-name">${p.name}</div>
+              ${p.description ? `<div class="product-desc">${p.description}</div>` : ''}
+              <div class="product-meta">
+                ${p.ageGroup ? `<span>${p.ageGroup}</span>` : ''}
+                ${p.sizes ? `<span>${p.sizes}</span>` : ''}
+              </div>
+              <div class="product-price-row">
+                <div>
+                  <span class="product-price">₹${p.price}</span>
+                </div>
+                ${p.stock > 0
+                  ? `<button class="btn-add-cart" onclick="addToCart('${p.id}')">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                      Add
+                    </button>`
+                  : `<button class="btn-out-stock">Out of Stock</button>`}
+              </div>
+              ${p.stock > 0 && p.stock <= 5 ? `<div class="stock-low">Only ${p.stock} left!</div>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join('');
+
+      const vaw = document.getElementById('viewAllWrap');
+      vaw.style.cssText = 'display:flex!important;justify-content:center;margin-top:24px';
+    } else {
+      console.error('Failed to load products:', data.message);
+      document.getElementById('statProducts').textContent = '0+';
+    }
+  } catch (error) {
+    console.error('Error loading products:', error);
+    document.getElementById('statProducts').textContent = '0+';
   }
 }
 
-// ── Load Featured Products (sale + latest 8) ──
-function loadFeatured(){
-  const products=getProducts();
-  document.getElementById('statProducts').textContent=products.length+'+';
-  if(products.length===0) return;
-  // show sale items first, then latest — max 8
-  const sale=products.filter(p=>p.sale);
-  const rest=products.filter(p=>!p.sale).slice(-8).reverse();
-  const featured=[...sale,...rest].slice(0,8);
-  const grid=document.getElementById('featuredGrid');
-  grid.innerHTML=featured.map(p=>`
-    <div class="col-6 col-md-4 col-lg-3">
-      <div class="product-card">
-        <div class="product-img-wrap">
-          ${p.image
-            ?`<img src="${p.image}" alt="${p.name}"/>`
-            :`<div class="product-no-img">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                <span>No Image</span>
-              </div>`}
-          ${p.sale?'<span class="sale-pill">SALE</span>':''}
-        </div>
-        <div class="product-body">
-          <span class="product-category">${p.category}</span>
-          <div class="product-name">${p.name}</div>
-          ${p.description?`<div class="product-desc">${p.description}</div>`:''}
-          <div class="product-meta">
-            ${p.ageGroup?`<span>${p.ageGroup}</span>`:''}
-            ${p.sizes?`<span>${p.sizes}</span>`:''}
-          </div>
-          <div class="product-price-row">
-            <div>
-              ${p.discountPrice
-                ?`<span class="product-price-discount">₹${p.discountPrice}</span>
-                   <span class="product-price-original">₹${p.price}</span>`
-                :`<span class="product-price">₹${p.price}</span>`}
-            </div>
-            ${p.stock>0
-              ?`<button class="btn-add-cart" onclick="addToCart('${p.id}')">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
-                  Add
-                </button>`
-              :`<button class="btn-out-stock">Out of Stock</button>`}
-          </div>
-          ${p.stock>0 && p.stock<=5?`<div class="stock-low">Only ${p.stock} left!</div>`:''}
-        </div>
-      </div>
-    </div>
-  `).join('');
-  const vaw=document.getElementById('viewAllWrap');
-  vaw.style.cssText='display:flex!important;justify-content:center;margin-top:24px';
+// ── Load Store Info ══
+function loadStoreInfo() {
+  // This would typically come from the backend or admin settings
+  // For now, using default values
+  const storeInfo = {
+    tagline: "shine bright",
+    about: "Decent Kids Wear is your go-to destination for premium, comfortable, and stylish clothing for children of all ages. We bring you the finest collection of kids fashion — from everyday casuals to festive ethnic wear — all crafted with the highest quality materials.",
+    phone: "+91 9876543210",
+    email: "shop@decentkidswear.com",
+    address: "Nanded, Maharashtra"
+  };
+  
+  document.getElementById('heroTagline').textContent = storeInfo.tagline;
+  document.getElementById('aboutText').textContent = storeInfo.about;
+  document.getElementById('contactPhone').textContent = storeInfo.phone;
+  document.getElementById('contactEmail').textContent = storeInfo.email;
+  document.getElementById('contactAddress').textContent = storeInfo.address;
 }
 
 // ── Profile initial ──
-function loadProfile(){
-  const user=JSON.parse(localStorage.getItem('dkw_loggedCustomer')||'{}');
-  if(user.name){
-    const pb=document.getElementById('profileBtn');
-    pb.textContent=user.name.charAt(0).toUpperCase();
+function loadProfile() {
+  if (user.name) {
+    const pb = document.getElementById('profileBtn');
+    pb.textContent = user.name.charAt(0).toUpperCase();
   }
 }
 
 // ── Scroll ──
-function scrollTo(id){
-  const el=document.getElementById(id);
-  if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+function scrollTo(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // ── Mobile menu ──
-function toggleMenu(){
+function toggleMenu() {
   document.getElementById('mobileMenu').classList.toggle('open');
 }
 
 // ── Logout ──
-function logout(){
-  if(!confirm('Logout?')) return;
-  localStorage.removeItem('dkw_loggedCustomer');
-  window.location.href='index.html';
+function logout() {
+  if (!confirm('Are you sure you want to logout?')) return;
+  localStorage.removeItem('decentkids_token');
+  localStorage.removeItem('decentkids_user');
+  localStorage.removeItem('decentkids_role');
+  localStorage.removeItem('decentkids_cart'); // Clear cart on logout
+  window.location.href = 'index.html';
 }
 
 // ── Init ──
 loadStoreInfo();
-loadFeatured();
+loadFeaturedProducts();
 updateCartCount();
 loadProfile();
 </script>
