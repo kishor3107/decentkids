@@ -1,0 +1,17 @@
+# Decent Kids Wear Backend - gitignore
+target/
+*.class
+*.jar
+*.war
+*.ear
+.env
+*.iml
+.idea/
+.vscode/
+.history/
+.metals/
+uploads/
+node_modules/
+.DS_Store
+Thumbs.db
+
