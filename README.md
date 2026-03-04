@@ -773,7 +773,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Project Lead**: Kishor
 - **GitHub Issues**: [Report bugs or request features](https://github.com/kishor3107/decentkids/issues)
-- **Email**: kishor3107@example.com
+- **Email**: kishorc1999@gmail.com
 
 ---
 
